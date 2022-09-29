@@ -45,6 +45,7 @@ typedef struct fd {
 } Filedata;
 
 std::vector<Symbol> all_symbols;
+int mins_passed = 0;
 
 unsigned int msleep(unsigned int tms) {
   return usleep(tms * 1000);
@@ -68,33 +69,79 @@ unsigned long long getTimeNow() {
     return millisecondsSinceEpoch;
 }
 
+void *workToDo(void *symbol) {
+    Symbol s = *(Symbol *) (symbol);
+    if (s.symbol == "AMZN") {
+        print_symbol(s);
+        // for last 1 min
+        int lines_to_read = s.current_1_min;
+        int lines_to_skip = s.total_times - s.current_1_min;
+        int bytes_per_line = 4 * sizeof(float);
+        FILE *file;
+        float buffer[4*lines_to_read];
+        std::string filename = "values_" + s.symbol + ".bin";
+        file = fopen(filename.c_str(), "rb");
+        if (!file)
+        {
+            fprintf(stderr, "Unable to open file %s", filename.c_str());
+            return NULL;
+        }
+        //Get file length
+        // fseek(file, 0, SEEK_END);
+        // fileLen=ftell(file);
+        // fseek(file, 0, SEEK_SET);
+
+        fseek(file, /* from the start */ lines_to_skip * bytes_per_line, SEEK_SET);
+        // buffer=(float *)malloc(sizeof(float *) * lines_to_read * 4); // 4 floats_per_line
+        size_t result = fread(buffer, sizeof(float)*4*lines_to_read, 1, file);
+        
+        fclose(file);
+
+        for (int i=0; i<4*lines_to_read; i++) {
+            std::cout << buffer[i] << std::endl;
+        }
+        free(buffer);
+    }
+    return NULL;
+}
+
 // for threads
 void *do_every_min(void *vargp) {
+    int long_work = 3; // 3 times longer than short work
     while(DO_WORK) {
-        std::cout << "\n--- " << getTimeNow() << " Short time passed, working... ---" << std::endl;
+        msleep(4* 1000);
+        mins_passed++;
+        std::cout << KGRN << "\n--- " << getTimeNow() << " Short time passed "<< mins_passed <<" , working... --- " << RESET << std::endl;
+        if (mins_passed % long_work == 0) {
+            std::cout << KCYN << "------- " << getTimeNow() << " LONG time passed -------" << RESET << std::endl;
+        }
+
+        std::vector<pthread_t> my_threads;
+
         for(int i=0; i<all_symbols.size(); i++) {
             all_symbols[i].current_1_min = all_symbols[i].total_times - all_symbols[i].prev_total_1_min;
-            print_symbol(all_symbols[i]);
-
+            if (mins_passed % long_work == 0) {
+                all_symbols[i].current_15_min = all_symbols[i].total_times - all_symbols[i].prev_total_15_min;
+                all_symbols[i].prev_total_15_min = all_symbols[i].total_times;
+            }
+            // print_symbol(all_symbols[i]);
             all_symbols[i].prev_total_1_min = all_symbols[i].total_times;
-        }   
-        msleep(4* 1000);
+
+            pthread_t new_thread;
+            pthread_create(&new_thread, NULL, workToDo, &all_symbols[i]);
+            my_threads.push_back(new_thread);
+        }
+
+        for(int i=0; i<my_threads.size(); i++) {
+            pthread_join(my_threads[i], NULL);
+            // std::cout << "Thread: " << i << " Done!" << std::endl;
+        }
+        
     }
     return NULL;
 }
 
-void *do_every_15_min(void *vargp) {
-    while(DO_WORK) {
-        std::cout << "\n------- " << getTimeNow() << " LONG time passed -------" << std::endl;
-        for(int i=0; i<all_symbols.size(); i++) {
-            all_symbols[i].current_15_min = all_symbols[i].total_times - all_symbols[i].prev_total_15_min;
-            all_symbols[i].prev_total_15_min = all_symbols[i].total_times;
-        }   
-        msleep(10* 1000);
-    }
-    return NULL;
-}
-
+// ----------------------------
 
 void clientRecievedData(char* in)
 {
@@ -140,7 +187,8 @@ void clientRecievedData(char* in)
             fd.price = price;
             fd.volume = vol;
 
-            
+            symbolString = "values_" + symbolString + ".bin";
+            writeToFile(symbolString, fd);
         }
     } else {
         char output[200];
@@ -190,7 +238,7 @@ static int ws_service_callback(
                 str = "{\"type\":\"subscribe\",\"symbol\":\"" + symb_arr[i] + "\"}";
                 const char *cstr = str.c_str();
                 int len = str.length();
-                std::cout << "str length: " << len << ", " << str << std::endl;
+                std::cout << "Sending: " << len << ", " << str << std::endl;
                 
                 out = (char *)malloc(sizeof(char)*(LWS_SEND_BUFFER_PRE_PADDING + len + LWS_SEND_BUFFER_POST_PADDING));
                 memcpy(out + LWS_SEND_BUFFER_PRE_PADDING, cstr, len);
@@ -226,7 +274,8 @@ void removeOldFiles() {
             try
             {
                 if(fs::is_regular_file(it->status()) && (it->path().extension().compare(".bin") == 0))
-                {
+                {   
+                    std::cout << "Removing: " << it->path() << std::endl;
                     fs::remove(it->path());
                 }
             }
@@ -240,7 +289,6 @@ void removeOldFiles() {
 
 int main(void)
 {   
-    removeOldFiles();
     struct lws_context *context = NULL;
     struct lws_context_creation_info info;
     struct lws *wsi = NULL;
@@ -297,13 +345,14 @@ int main(void)
 
     printf(KGRN "[Main] wsi create success.\n" RESET);
 
+    removeOldFiles();
     // start the every min thread
     pthread_t thread_work_every_min;
     pthread_create(&thread_work_every_min, NULL, do_every_min, NULL);
 
-    // start the every 15 min thread
-    pthread_t thread_work_every_15_min;
-    pthread_create(&thread_work_every_15_min, NULL, do_every_15_min, NULL);
+    // // start the every 15 min thread
+    // pthread_t thread_work_every_15_min;
+    // pthread_create(&thread_work_every_15_min, NULL, do_every_15_min, NULL);
 
     while(!destroy_flag)
     {
