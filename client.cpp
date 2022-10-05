@@ -23,7 +23,7 @@ namespace fs = boost::filesystem;
 #define RESET "\033[0m"
 
 #define EXAMPLE_RX_BUFFER_BYTES (20*1024) 
-#define MINS 3
+#define MINS 15
 
 static int destroy_flag = 0;
 static int connection_flag = 0;
@@ -235,14 +235,11 @@ void *workToDo(void *symbol) {
 
 // for threads
 void *do_every_min(void *vargp) {
-    int long_work = 3; // 3 times longer than short work
+    int long_work = 15; // 15 times longer than short work
     while(DO_WORK) {
-        msleep(4* 1000);
+        msleep(60 * 1000);
         mins_passed++;
         std::cout << KGRN << "\n--- " << getDateTimeNow() << " Short time passed "<< mins_passed <<" , working... --- " << RESET << std::endl;
-        // if (mins_passed % long_work == 0) {
-        //     std::cout << KCYN << "------- " << getDateTimeNow() << " LONG time passed -------" << RESET << std::endl;
-        // }
 
         std::vector<pthread_t> my_threads;
 
@@ -416,8 +413,7 @@ void removeOldFiles() {
     }
 }
 
-int main(void)
-{   
+void startWS() {
     struct lws_context *context = NULL;
     struct lws_context_creation_info info;
     struct lws *wsi = NULL;
@@ -439,7 +435,7 @@ int main(void)
 
     if (context == NULL) {
         printf(KRED "[Main] context is NULL.\n" RESET);
-        return -1;
+        return;
     }
     struct lws_client_connect_info clientConnectionInfo;
     memset(&clientConnectionInfo, 0, sizeof(clientConnectionInfo));
@@ -468,23 +464,48 @@ int main(void)
     wsi = lws_client_connect_via_info(&clientConnectionInfo);
     if (wsi == NULL) {
         printf(KRED "[Main] wsi create error.\n" RESET);
-        return -1;
+        return;
     }
 
     printf(KGRN "[Main] wsi create success.\n" RESET);
-
-    removeOldFiles(); // .bin
-
-    // start the every min thread
-    pthread_t thread_work_every_min;
-    pthread_create(&thread_work_every_min, NULL, do_every_min, NULL);
-
     while(!destroy_flag)
     {
         lws_service(context, 50);
     }
 
     lws_context_destroy(context);
+}
+
+int main(void)
+{   
+    removeOldFiles(); // .bin, .txt
+
+    // wait for next minute to start
+    bool flag = true;
+    int start_min = ( time( 0 ) % 3600 ) / 60;
+    long start = getTimeNow();
+    while (flag)
+    {
+        int curr_min = ( time( 0 ) % 3600 ) / 60;
+        time_t curr_time = time(0);
+        char* dt = ctime(&curr_time);
+        long now = getTimeNow();
+        if (now - start >= 1000) { // show evey second
+            std::cout << "Minute of current hour is " << curr_min << ", secs: " <<  dt << std::endl;
+            start = now;
+        }
+        if (curr_min != start_min) {
+            flag = false;
+        }
+    }
+
+    // start the every min thread
+    pthread_t thread_work_every_min;
+    pthread_create(&thread_work_every_min, NULL, do_every_min, NULL);
+
+    startWS();
+
+    std::cout << "ending program" << std::endl;
     pthread_join(thread_work_every_min, NULL);
 
     return 0;
