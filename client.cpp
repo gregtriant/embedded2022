@@ -89,6 +89,56 @@ std::string getDateTimeNow()
   return buf;
 }
 
+
+// function declarations
+void candleWork(Symbol s);
+void meanWork(Symbol s);
+void *work_to_do(void *symbol);
+void *do_every_min(void *vargp);
+void client_recieved_data(char* in);
+static int ws_service_callback(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len);
+void removeOldFiles();
+void *startWS(void *vargp);
+
+
+int main(void)
+{   
+    removeOldFiles(); // .bin, .txt
+
+    // wait for next minute to start
+    bool flag = true;
+    int start_min = ( time( 0 ) % 3600 ) / 60;
+    long start = getTimeNow();
+    while (flag)
+    {
+        int curr_min = ( time( 0 ) % 3600 ) / 60;
+        time_t curr_time = time(0);
+        char* dt = ctime(&curr_time);
+        long now = getTimeNow();
+        if (now - start >= 1000) { // show evey second
+            std::cout << "Minute of current hour is " << curr_min << ", secs: " <<  dt << std::endl;
+            start = now;
+        }
+        if (curr_min != start_min) {
+            flag = false;
+        }
+    }
+
+    pthread_t thread_work_every_min;
+    pthread_create(&thread_work_every_min, NULL, do_every_min, NULL);
+
+    pthread_t ws_thread;
+    pthread_create(&ws_thread, NULL, startWS, NULL);
+    
+    std::cout << "Waiting for threads to join..." << std::endl;
+    pthread_join(thread_work_every_min, NULL);
+    pthread_join(ws_thread, NULL);
+    std::cout << "Ending program!" << std::endl;
+
+    return 0;
+}
+
+
 void candleWork(Symbol s) {
     // for last 1 min
     float initial_price = 0;
@@ -224,7 +274,7 @@ void meanWork(Symbol s) {
     }
 }
 
-void *workToDo(void *symbol) {
+void *work_to_do(void *symbol) {
     Symbol s = *(Symbol *) (symbol);
     print_symbol(s);
     
@@ -243,6 +293,8 @@ void *do_every_min(void *vargp) {
 
         std::vector<pthread_t> my_threads;
 
+        bool all_zeros = true;
+
         for (int i=0; i<all_symbols.size(); i++) {
             all_symbols[i].current_1_min = all_symbols[i].total_times - all_symbols[i].prev_total_1_min;
             all_symbols[i].prev_total_1_min = all_symbols[i].total_times;
@@ -251,14 +303,25 @@ void *do_every_min(void *vargp) {
             }
             all_symbols[i].last_15_mins[MINS-1] = all_symbols[i].current_1_min;
 
+            if (all_symbols[i].current_1_min != 0) {
+                all_zeros = false;
+            }
+
             pthread_t new_thread;
-            pthread_create(&new_thread, NULL, workToDo, &all_symbols[i]);
+            pthread_create(&new_thread, NULL, work_to_do, &all_symbols[i]);
             my_threads.push_back(new_thread);
         }
 
         for (int i=0; i<my_threads.size(); i++) {
             pthread_join(my_threads[i], NULL);
             // std::cout << "Thread: " << i << " Done!" << std::endl;
+        }
+
+        if (all_zeros == true) {
+            destroy_flag = 0;
+            // restart WS
+            pthread_t ws_thread;
+            pthread_create(&ws_thread, NULL, startWS, NULL);
         }
         
     }
@@ -267,7 +330,7 @@ void *do_every_min(void *vargp) {
 
 // ----------------------------
 
-void clientRecievedData(char* in)
+void client_recieved_data(char* in)
 {
     ArduinoJson::DynamicJsonDocument doc(EXAMPLE_RX_BUFFER_BYTES);
     ArduinoJson::deserializeJson(doc, in);
@@ -323,10 +386,7 @@ void clientRecievedData(char* in)
     
 }
 
-static int ws_service_callback(
-    struct lws *wsi,
-    enum lws_callback_reasons reason, void *user,
-    void *in, size_t len)
+static int ws_service_callback(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len)
 {
     switch (reason) {
 
@@ -350,7 +410,7 @@ static int ws_service_callback(
 
         case LWS_CALLBACK_CLIENT_RECEIVE:
             // printf(KCYN_L "[Main Service] Client recvived:" RESET);
-            clientRecievedData((char *)in);
+            client_recieved_data((char *)in);
             break;
 
         case LWS_CALLBACK_CLIENT_WRITEABLE:
@@ -378,16 +438,6 @@ static int ws_service_callback(
     return 0;
 }
 
-static struct lws_protocols protocols[] =
-{
-	{
-		"example-protocol",
-		ws_service_callback,
-		0,
-		EXAMPLE_RX_BUFFER_BYTES,
-	},
-	{ NULL, NULL, 0, 0 } /* terminator */
-};
 
 // removing old .txt and .bin files
 void removeOldFiles() {
@@ -413,7 +463,19 @@ void removeOldFiles() {
     }
 }
 
-void startWS() {
+static struct lws_protocols protocols[] =
+{
+	{
+		"example-protocol",
+		ws_service_callback,
+		0,
+		EXAMPLE_RX_BUFFER_BYTES,
+	},
+	{ NULL, NULL, 0, 0 } /* terminator */
+};
+
+void *startWS(void *vargp) {
+    destroy_flag = 0;
     struct lws_context *context = NULL;
     struct lws_context_creation_info info;
     struct lws *wsi = NULL;
@@ -435,7 +497,7 @@ void startWS() {
 
     if (context == NULL) {
         printf(KRED "[Main] context is NULL.\n" RESET);
-        return;
+        return NULL;
     }
     struct lws_client_connect_info clientConnectionInfo;
     memset(&clientConnectionInfo, 0, sizeof(clientConnectionInfo));
@@ -464,7 +526,7 @@ void startWS() {
     wsi = lws_client_connect_via_info(&clientConnectionInfo);
     if (wsi == NULL) {
         printf(KRED "[Main] wsi create error.\n" RESET);
-        return;
+        return NULL;
     }
 
     printf(KGRN "[Main] wsi create success.\n" RESET);
@@ -472,41 +534,8 @@ void startWS() {
     {
         lws_service(context, 50);
     }
-
+    printf("------ Destroying lws_context!!!! ------ \n");
     lws_context_destroy(context);
-}
 
-int main(void)
-{   
-    removeOldFiles(); // .bin, .txt
-
-    // wait for next minute to start
-    bool flag = true;
-    int start_min = ( time( 0 ) % 3600 ) / 60;
-    long start = getTimeNow();
-    while (flag)
-    {
-        int curr_min = ( time( 0 ) % 3600 ) / 60;
-        time_t curr_time = time(0);
-        char* dt = ctime(&curr_time);
-        long now = getTimeNow();
-        if (now - start >= 1000) { // show evey second
-            std::cout << "Minute of current hour is " << curr_min << ", secs: " <<  dt << std::endl;
-            start = now;
-        }
-        if (curr_min != start_min) {
-            flag = false;
-        }
-    }
-
-    // start the every min thread
-    pthread_t thread_work_every_min;
-    pthread_create(&thread_work_every_min, NULL, do_every_min, NULL);
-
-    startWS();
-
-    std::cout << "ending program" << std::endl;
-    pthread_join(thread_work_every_min, NULL);
-
-    return 0;
+    return NULL;
 }
