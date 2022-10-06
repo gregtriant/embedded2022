@@ -15,7 +15,8 @@ make && sudo make install
 
 # Download and run codebase:
 git clone https://github.com/gregtriant/embedded2022.git  
-cd embedded2022  
+cd embedded2022
+make clean
 make  
 
 # To run the process from ssh in the background type:

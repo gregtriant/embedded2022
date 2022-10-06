@@ -22,7 +22,7 @@ namespace fs = boost::filesystem;
 #define KBRN "\033[0;33m"
 #define RESET "\033[0m"
 
-#define EXAMPLE_RX_BUFFER_BYTES (20*1024) 
+#define EXAMPLE_RX_BUFFER_BYTES (30*1024) 
 #define MINS 15
 
 static int destroy_flag = 0;
@@ -116,7 +116,7 @@ int main(void)
         char* dt = ctime(&curr_time);
         long now = getTimeNow();
         if (now - start >= 1000) { // show evey second
-            std::cout << "Minute of current hour is " << curr_min << ", secs: " <<  dt << std::endl;
+            std::cout << "Minute of current hour is " << curr_min << ", " <<  dt;
             start = now;
         }
         if (curr_min != start_min) {
@@ -287,7 +287,26 @@ void *work_to_do(void *symbol) {
 void *do_every_min(void *vargp) {
     int long_work = 15; // 15 times longer than short work
     while(DO_WORK) {
-        msleep(60 * 1000);
+        // wait for next minute to start
+        bool flag = true;
+        int start_min = ( time( 0 ) % 3600 ) / 60;
+        // long start = getTimeNow();
+        while (flag)
+        {
+            int curr_min = ( time( 0 ) % 3600 ) / 60;
+            // time_t curr_time = time(0);
+            // char* dt = ctime(&curr_time);
+            // long now = getTimeNow();
+            // if (now - start >= 1000) { // show evey second
+            //     std::cout <<  dt;
+            //     start = now;
+            // }
+            if (curr_min != start_min) {
+                flag = false;
+            }
+        }
+
+
         mins_passed++;
         std::cout << KGRN << "\n--- " << getDateTimeNow() << " Short time passed "<< mins_passed <<" , working... --- " << RESET << std::endl;
 
@@ -419,7 +438,7 @@ static int ws_service_callback(struct lws *wsi, enum lws_callback_reasons reason
             std::string symb_arr[11] = {"APPL\0", "AMZN\0", "MSFT\0", "KO\0", "TSLA\0", "NVDA\0", "IC MARKETS:1\0", "EURUSD\0", "BINANCE:BTCUSDT\0", "BINANCE:ETHUSDT\0", "BINANCE:XMRUSDT\0"};
             std::string str;
             
-            for(int i = 0; i < 9; i++){
+            for(int i = 0; i < 11; i++){
                 str = "{\"type\":\"subscribe\",\"symbol\":\"" + symb_arr[i] + "\"}";
                 const char *cstr = str.c_str();
                 int len = str.length();
